@@ -74,6 +74,7 @@ void *HandleUserInput(void *arg) {
       perror("Error sending message to the server");
       break; // Break the loop on send error
     }
+    printf("\n");
   }
 
   close(clientSocket);
