@@ -1,120 +1,145 @@
-// client.c
+// server.c
 
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 #include <unistd.h>
 
-#define MAX_NAME_LEN 20
-#define MAX_MSG_LEN 200
+#define MAX_CLIENTS 10
+#define MAX_MESSAGE_SIZE 1024
+#define PORT 12345
 
-void connectToServer();
-void *receiveChat(void *arg);
-void sendConnCommand(int serverSocket, char *name);
-void sendMessage(int serverSocket, char *receiver, char *message);
+typedef struct {
+  int socket;
+  char name[50];
+} Client;
 
-int serverSocket;
+Client activeClients[MAX_CLIENTS];
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
-int main() {
-  // Initialization code for the client socket
-  struct sockaddr_in serverAddr;
+void *ServiceClient(void *arg) {
+  int clientSocket = *((int *)arg);
+  char buffer[MAX_MESSAGE_SIZE];
 
-  serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-  if (serverSocket == -1) {
-    perror("Socket creation failed");
-    exit(EXIT_FAILURE);
+  // Receive the client's name
+  if (recv(clientSocket, buffer, sizeof(buffer), 0) <= 0) {
+    close(clientSocket);
+    pthread_exit(NULL);
   }
 
-  memset(&serverAddr, 0, sizeof(serverAddr));
-  serverAddr.sin_family = AF_INET;
-  serverAddr.sin_port = htons(12345);
-  serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-  if (connect(serverSocket, (struct sockaddr *)&serverAddr,
-              sizeof(serverAddr)) == -1) {
-    perror("Connection failed");
-    close(serverSocket);
-    exit(EXIT_FAILURE);
+  // Add the client to the list of active clients
+  pthread_mutex_lock(&mutex);
+  for (int i = 0; i < MAX_CLIENTS; ++i) {
+    if (activeClients[i].socket == -1) {
+      activeClients[i].socket = clientSocket;
+      strncpy(activeClients[i].name, buffer, sizeof(activeClients[i].name));
+      break;
+    }
   }
+  pthread_mutex_unlock(&mutex);
 
-  // Connect to the server
-  connectToServer();
+  printf("Client %s connected\n", buffer);
 
-  // Code for user input and sending messages
-  char name[MAX_NAME_LEN];
-  printf("Enter your chat name: ");
-  fgets(name, MAX_NAME_LEN, stdin);
-  name[strcspn(name, "\n")] = '\0'; // Remove the newline character
-
-  sendConnCommand(serverSocket, name);
-
-  // Create a thread to receive messages
-  pthread_t receiveThread;
-  pthread_create(&receiveThread, NULL, receiveChat, (void *)&serverSocket);
-  pthread_detach(receiveThread);
-
-  // Main loop for sending messages
-  char receiver[MAX_NAME_LEN];
-  char message[MAX_MSG_LEN];
+  // Implement message processing and forwarding here
   while (1) {
-    printf("Enter recipient's name (or type 'exit' to quit): ");
-    fgets(receiver, MAX_NAME_LEN, stdin);
-    receiver[strcspn(receiver, "\n")] = '\0'; // Remove the newline character
-
-    if (strcmp(receiver, "exit") == 0) {
+    // Receive private messages from the client
+    if (recv(clientSocket, buffer, sizeof(buffer), 0) <= 0) {
       break;
     }
 
-    printf("Enter your message: ");
-    fgets(message, MAX_MSG_LEN, stdin);
-    message[strcspn(message, "\n")] = '\0'; // Remove the newline character
+    // Extract recipient name and message
+    char recipient[50];
+    char message[MAX_MESSAGE_SIZE];
+    sscanf(buffer, "%s %[^\n]", recipient, message);
 
-    sendMessage(serverSocket, receiver, message);
+    // Find the recipient in the activeClients list
+    pthread_mutex_lock(&mutex);
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+      if (activeClients[i].socket != -1 &&
+          strcmp(activeClients[i].name, recipient) == 0) {
+        // Send the private message to the recipient
+        send(activeClients[i].socket, message, strlen(message), 0);
+        break;
+      }
+    }
+    pthread_mutex_unlock(&mutex);
+  }
+
+  // Close the client socket and remove from the active clients list
+  pthread_mutex_lock(&mutex);
+  for (int i = 0; i < MAX_CLIENTS; ++i) {
+    if (activeClients[i].socket == clientSocket) {
+      close(clientSocket);
+      activeClients[i].socket = -1;
+      printf("Client %s disconnected\n", activeClients[i].name);
+      break;
+    }
+  }
+  pthread_mutex_unlock(&mutex);
+
+  pthread_exit(NULL);
+}
+
+int main() {
+  int serverSocket, clientSocket;
+  struct sockaddr_in serverAddr, clientAddr;
+  socklen_t addrSize = sizeof(struct sockaddr_in);
+
+  // Initialize activeClients array
+  for (int i = 0; i < MAX_CLIENTS; ++i) {
+    activeClients[i].socket = -1;
+  }
+
+  // Create socket
+  serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+  if (serverSocket == -1) {
+    perror("Error creating socket");
+    exit(EXIT_FAILURE);
+  }
+
+  // Set up server address
+  memset(&serverAddr, 0, sizeof(serverAddr));
+  serverAddr.sin_family = AF_INET;
+  serverAddr.sin_addr.s_addr = INADDR_ANY;
+  serverAddr.sin_port = htons(PORT);
+
+  // Bind socket
+  if (bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) ==
+      -1) {
+    perror("Error binding socket");
+    exit(EXIT_FAILURE);
+  }
+
+  printf("Server is listening on port %d\n", PORT);
+
+  // Listen for incoming connections
+  if (listen(serverSocket, MAX_CLIENTS) == -1) {
+    perror("Error listening for connections");
+    exit(EXIT_FAILURE);
+  }
+
+  while (1) {
+    // Accept a new connection
+    clientSocket =
+        accept(serverSocket, (struct sockaddr *)&clientAddr, &addrSize);
+    if (clientSocket == -1) {
+      perror("Error accepting connection");
+      continue;
+    }
+
+    // Create a new thread for the client
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, ServiceClient, &clientSocket) != 0) {
+      perror("Error creating thread");
+      close(clientSocket);
+    }
+
+    // Detach the thread to avoid memory leaks
+    pthread_detach(thread);
   }
 
   close(serverSocket);
   return 0;
-}
-
-void connectToServer() {
-  // Code for connecting to the server
-  
-}
-
-void *receiveChat(void *arg) {
-  int serverSocket = *((int *)arg);
-  // Implementation of the ReceiveChat thread
-
-  char buffer[MAX_MSG_LEN];
-  while (1) {
-    memset(buffer, 0, sizeof(buffer));
-    int bytesRead = recv(serverSocket, buffer, sizeof(buffer), 0);
-
-    if (bytesRead <= 0) {
-      perror("Connection closed");
-      break;
-    }
-
-    printf("Received: %s\n", buffer);
-  }
-
-  return NULL;
-}
-
-void sendConnCommand(int serverSocket, char *name) {
-  // Send a connection command to the server
-  char connCommand[MAX_NAME_LEN + 6]; // "CONN|" + name + "|"
-  sprintf(connCommand, "CONN|%s|", name);
-  send(serverSocket, connCommand, strlen(connCommand), 0);
-}
-
-void sendMessage(int serverSocket, char *receiver, char *message) {
-  // Send a private message to the specified receiver
-  char sendMessage[MAX_NAME_LEN + MAX_MSG_LEN +
-                   6]; // "MESG|" + receiver + "|" + message + "|"
-  sprintf(sendMessage, "MESG|%s|%s|", receiver, message);
-  send(serverSocket, sendMessage, strlen(sendMessage), 0);
 }

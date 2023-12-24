@@ -1,4 +1,4 @@
-// server.c
+// client.c
 
 #include <arpa/inet.h>
 #include <pthread.h>
@@ -7,100 +7,115 @@
 #include <string.h>
 #include <unistd.h>
 
-#define MAX_CLIENTS 10
-#define MAX_NAME_LEN 20
-#define MAX_MSG_LEN 200
+#define SERVER_IP "127.0.0.1"
+#define PORT 12345
+#define MAX_MESSAGE_SIZE 1024
 
 typedef struct {
-  int socket;
-  char name[MAX_NAME_LEN];
-} Client;
+  char sender[50];
+  char recipient[50];
+  char message[MAX_MESSAGE_SIZE];
+} PrivateMessage;
 
-Client activeClients[MAX_CLIENTS];
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+void *HandleUserInput(void *arg) {
+  int clientSocket = *((int *)arg);
+  char recipient[50];
+  char message[MAX_MESSAGE_SIZE];
+  PrivateMessage privateMessage;
 
-void *serviceClient(void *arg);
-void broadcast(char *message, int senderSocket);
-void sendError(int receiverSocket);
+  // Get the user's name
+  printf("Enter your name: ");
+  if (fgets(privateMessage.sender, sizeof(privateMessage.sender), stdin) ==
+      NULL) {
+    perror("Error reading user input");
+    close(clientSocket);
+    pthread_exit(NULL);
+  }
 
-int serverSocket;
+  privateMessage.sender[strcspn(privateMessage.sender, "\n")] =
+      '\0'; // Remove the newline character
+
+  // Send the user's name to the server
+  if (send(clientSocket, privateMessage.sender, strlen(privateMessage.sender),
+           0) == -1) {
+    perror("Error sending user name to the server");
+    close(clientSocket);
+    pthread_exit(NULL);
+  }
+
+  while (1) {
+    // Get recipient and message from user input
+    printf("Enter recipient's name (or 'exit' to quit): ");
+    if (fgets(recipient, sizeof(recipient), stdin) == NULL) {
+      perror("Error reading user input");
+      break; // Break the loop on input error
+    }
+    recipient[strcspn(recipient, "\n")] = '\0'; // Remove the newline character
+
+    // Check if the user wants to exit
+    if (strcmp(recipient, "exit") == 0) {
+      break;
+    }
+
+    printf("Enter message: ");
+    if (fgets(message, sizeof(message), stdin) == NULL) {
+      perror("Error reading user input");
+      break; // Break the loop on input error
+    }
+    message[strcspn(message, "\n")] = '\0'; // Remove the newline character
+
+    // Prepare the private message
+    strncpy(privateMessage.recipient, recipient,
+            sizeof(privateMessage.recipient));
+    strncpy(privateMessage.message, message, sizeof(privateMessage.message));
+
+    // Send the private message to the server
+    if (send(clientSocket, &privateMessage, sizeof(PrivateMessage), 0) == -1) {
+      perror("Error sending message to the server");
+      break; // Break the loop on send error
+    }
+  }
+
+  close(clientSocket);
+  pthread_exit(NULL);
+}
 
 int main() {
-  // Initialization code for the server socket
+  int clientSocket;
   struct sockaddr_in serverAddr;
-  serverSocket = socket(AF_INET, SOCK_STREAM, 0);
 
-  if (serverSocket == -1) {
-    perror("Socket creation failed");
+  // Create socket
+  clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+  if (clientSocket == -1) {
+    perror("Error creating socket");
     exit(EXIT_FAILURE);
   }
 
+  // Set up server address
   memset(&serverAddr, 0, sizeof(serverAddr));
   serverAddr.sin_family = AF_INET;
-  serverAddr.sin_addr.s_addr = INADDR_ANY;
-  serverAddr.sin_port = htons(12345);
+  serverAddr.sin_addr.s_addr = inet_addr(SERVER_IP);
+  serverAddr.sin_port = htons(PORT);
 
-  if (bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) ==
-      -1) {
-    perror("Bind failed");
-    close(serverSocket);
+  // Connect to the server
+  if (connect(clientSocket, (struct sockaddr *)&serverAddr,
+              sizeof(serverAddr)) == -1) {
+    perror("Error connecting to the server");
+    close(clientSocket);
     exit(EXIT_FAILURE);
   }
 
-  if (listen(serverSocket, 10) == -1) {
-    perror("Listen failed");
-    close(serverSocket);
+  // Create a thread to handle user input
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, HandleUserInput, &clientSocket) != 0) {
+    perror("Error creating thread");
+    close(clientSocket);
     exit(EXIT_FAILURE);
   }
 
-  // Loop to accept incoming connections
-  while (1) {
-    // Accept a new client connection
-    struct sockaddr_in clientAddr;
-    socklen_t clientAddrLen = sizeof(clientAddr);
-    int clientSocket =
-        accept(serverSocket, (struct sockaddr *)&clientAddr, &clientAddrLen);
+  // Wait for the thread to finish
+  pthread_join(thread, NULL);
 
-    if (clientSocket == -1) {
-      perror("Accept failed");
-      continue;
-    }
-
-    // Create a new thread to handle the client
-    pthread_t tid;
-    pthread_create(&tid, NULL, serviceClient, (void *)&clientSocket);
-    pthread_detach(tid);
-  }
-
-  close(serverSocket);
-  return 0;
-}
-
-void *serviceClient(void *arg) {
-  int clientSocket = *((int *)arg);
-  // Implementation of the ServiceClient thread
-
-  // Receive and process messages from the client
-
-  // Close the client connection when needed
   close(clientSocket);
-  return NULL;
-}
-
-void broadcast(char *message, int senderSocket) {
-  // Send a message to all clients except the sender
-  pthread_mutex_lock(&mutex);
-  for (int i = 0; i < MAX_CLIENTS; i++) {
-    if (activeClients[i].socket != 0 &&
-        activeClients[i].socket != senderSocket) {
-      send(activeClients[i].socket, message, strlen(message), 0);
-    }
-  }
-  pthread_mutex_unlock(&mutex);
-}
-
-void sendError(int receiverSocket) {
-  // Send an error message to the specified client
-  char errorMessage[] = "MERR|";
-  send(receiverSocket, errorMessage, strlen(errorMessage), 0);
+  return 0;
 }
