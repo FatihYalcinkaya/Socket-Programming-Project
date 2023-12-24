@@ -16,15 +16,34 @@ typedef struct {
   char name[50];
 } Client;
 
+typedef struct {
+  char sender[50];
+  char recipient[50];
+  char message[MAX_MESSAGE_SIZE];
+} PrivateMessage;
+
 Client activeClients[MAX_CLIENTS];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
+void BroadcastMessage(const char *message, int senderSocket) {
+  pthread_mutex_lock(&mutex);
+  for (int i = 0; i < MAX_CLIENTS; ++i) {
+    if (activeClients[i].socket != -1 &&
+        activeClients[i].socket != senderSocket) {
+      send(activeClients[i].socket, message, strlen(message), 0);
+    }
+  }
+  pthread_mutex_unlock(&mutex);
+}
+
 void *ServiceClient(void *arg) {
   int clientSocket = *((int *)arg);
-  char buffer[MAX_MESSAGE_SIZE];
+  PrivateMessage privateMessage;
 
   // Receive the client's name
-  if (recv(clientSocket, buffer, sizeof(buffer), 0) <= 0) {
+  if (recv(clientSocket, privateMessage.sender, sizeof(privateMessage.sender),
+           0) <= 0) {
+    perror("Error receiving client name");
     close(clientSocket);
     pthread_exit(NULL);
   }
@@ -34,33 +53,39 @@ void *ServiceClient(void *arg) {
   for (int i = 0; i < MAX_CLIENTS; ++i) {
     if (activeClients[i].socket == -1) {
       activeClients[i].socket = clientSocket;
-      strncpy(activeClients[i].name, buffer, sizeof(activeClients[i].name));
+      strncpy(activeClients[i].name, privateMessage.sender,
+              sizeof(activeClients[i].name));
+      printf("Client %s connected\n", privateMessage.sender);
       break;
     }
   }
   pthread_mutex_unlock(&mutex);
 
-  printf("Client %s connected\n", buffer);
-
   // Implement message processing and forwarding here
   while (1) {
     // Receive private messages from the client
-    if (recv(clientSocket, buffer, sizeof(buffer), 0) <= 0) {
+    if (recv(clientSocket, &privateMessage, sizeof(PrivateMessage), 0) <= 0) {
+      perror("Error receiving private message");
       break;
     }
-
-    // Extract recipient name and message
-    char recipient[50];
-    char message[MAX_MESSAGE_SIZE];
-    sscanf(buffer, "%s %[^\n]", recipient, message);
 
     // Find the recipient in the activeClients list
     pthread_mutex_lock(&mutex);
     for (int i = 0; i < MAX_CLIENTS; ++i) {
       if (activeClients[i].socket != -1 &&
-          strcmp(activeClients[i].name, recipient) == 0) {
+          strcmp(activeClients[i].name, privateMessage.recipient) == 0) {
         // Send the private message to the recipient
-        send(activeClients[i].socket, message, strlen(message), 0);
+        char displayMessage[MAX_MESSAGE_SIZE + 100]; // Increased size
+        snprintf(displayMessage, sizeof(displayMessage), "[%s -> %s]: %s",
+                 privateMessage.sender, privateMessage.recipient,
+                 privateMessage.message);
+
+        if (send(activeClients[i].socket, displayMessage,
+                 strlen(displayMessage), 0) == -1) {
+          perror("Error sending private message");
+          break;
+        }
+
         break;
       }
     }
@@ -72,8 +97,8 @@ void *ServiceClient(void *arg) {
   for (int i = 0; i < MAX_CLIENTS; ++i) {
     if (activeClients[i].socket == clientSocket) {
       close(clientSocket);
-      activeClients[i].socket = -1;
       printf("Client %s disconnected\n", activeClients[i].name);
+      activeClients[i].socket = -1;
       break;
     }
   }
@@ -112,13 +137,13 @@ int main() {
     exit(EXIT_FAILURE);
   }
 
-  printf("Server is listening on port %d\n", PORT);
-
   // Listen for incoming connections
   if (listen(serverSocket, MAX_CLIENTS) == -1) {
     perror("Error listening for connections");
     exit(EXIT_FAILURE);
   }
+
+  printf("Server is listening on port %d\n", PORT);
 
   while (1) {
     // Accept a new connection
