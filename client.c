@@ -80,6 +80,24 @@ void *HandleUserInput(void *arg) {
   pthread_exit(NULL);
 }
 
+void *ReceiveMessages(void *arg) {
+  int clientSocket = *((int *)arg);
+  char buffer[MAX_MESSAGE_SIZE];
+
+  while (1) {
+    // Receive messages from the server
+    if (recv(clientSocket, buffer, sizeof(buffer), 0) <= 0) {
+      break;
+    }
+
+    // Display received messages
+    printf("%s\n", buffer);
+  }
+
+  close(clientSocket);
+  pthread_exit(NULL);
+}
+
 int main() {
   int clientSocket;
   struct sockaddr_in serverAddr;
@@ -105,16 +123,21 @@ int main() {
     exit(EXIT_FAILURE);
   }
 
-  // Create a thread to handle user input
-  pthread_t thread;
-  if (pthread_create(&thread, NULL, HandleUserInput, &clientSocket) != 0) {
-    perror("Error creating thread");
+  // Create threads to handle user input and message reception
+  pthread_t userInputThread, receiveMessagesThread;
+
+  if (pthread_create(&userInputThread, NULL, HandleUserInput, &clientSocket) !=
+          0 ||
+      pthread_create(&receiveMessagesThread, NULL, ReceiveMessages,
+                     &clientSocket) != 0) {
+    perror("Error creating threads");
     close(clientSocket);
     exit(EXIT_FAILURE);
   }
 
-  // Wait for the thread to finish
-  pthread_join(thread, NULL);
+  // Wait for the threads to finish
+  pthread_join(userInputThread, NULL);
+  pthread_join(receiveMessagesThread, NULL);
 
   close(clientSocket);
   return 0;

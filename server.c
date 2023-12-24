@@ -14,7 +14,6 @@
 typedef struct {
   int socket;
   char name[50];
-  pthread_t thread;
 } Client;
 
 typedef struct {
@@ -37,28 +36,36 @@ void BroadcastMessage(const char *message, int senderSocket) {
   pthread_mutex_unlock(&mutex);
 }
 
-void *HandleClient(void *arg) {
-  Client *client = (Client *)arg;
-  int clientSocket = client->socket;
-  char name[50];
+void *ServiceClient(void *arg) {
+  int clientSocket = *((int *)arg);
+  PrivateMessage privateMessage;
 
   // Receive the client's name
-  if (recv(clientSocket, name, sizeof(name), 0) <= 0) {
+  if (recv(clientSocket, privateMessage.sender, sizeof(privateMessage.sender),
+           0) <= 0) {
     perror("Error receiving client name");
     close(clientSocket);
     pthread_exit(NULL);
   }
 
-  strncpy(client->name, name, sizeof(client->name));
-
-  printf("Client %s connected\n", name);
+  // Add the client to the list of active clients
+  pthread_mutex_lock(&mutex);
+  for (int i = 0; i < MAX_CLIENTS; ++i) {
+    if (activeClients[i].socket == -1) {
+      activeClients[i].socket = clientSocket;
+      strncpy(activeClients[i].name, privateMessage.sender,
+              sizeof(activeClients[i].name));
+      printf("Client %s connected\n", privateMessage.sender);
+      break;
+    }
+  }
+  pthread_mutex_unlock(&mutex);
 
   // Implement message processing and forwarding here
   while (1) {
-    PrivateMessage privateMessage;
-
     // Receive private messages from the client
     if (recv(clientSocket, &privateMessage, sizeof(PrivateMessage), 0) <= 0) {
+      perror("Error receiving private message");
       break;
     }
 
@@ -149,19 +156,13 @@ int main() {
 
     // Create a new thread for the client
     pthread_t thread;
-    int index;
-
-    pthread_mutex_lock(&mutex);
-    for (index = 0; index < MAX_CLIENTS; ++index) {
-      if (activeClients[index].socket == -1) {
-        activeClients[index].socket = clientSocket;
-        pthread_create(&activeClients[index].thread, NULL, HandleClient,
-                       &activeClients[index]);
-        pthread_detach(activeClients[index].thread);
-        break;
-      }
+    if (pthread_create(&thread, NULL, ServiceClient, &clientSocket) != 0) {
+      perror("Error creating thread");
+      close(clientSocket);
     }
-    pthread_mutex_unlock(&mutex);
+
+    // Detach the thread to avoid memory leaks
+    pthread_detach(thread);
   }
 
   close(serverSocket);
