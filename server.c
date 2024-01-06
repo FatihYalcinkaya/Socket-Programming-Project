@@ -20,6 +20,9 @@ typedef struct {
   char sender[50];
   char recipient[50];
   char message[MAX_MESSAGE_SIZE];
+  int parity;            // Simple Parity
+  unsigned int checksum; // Checksum
+  unsigned int crc;      // Cyclic Redundancy Check (CRC)
 } PrivateMessage;
 
 Client activeClients[MAX_CLIENTS];
@@ -34,6 +37,37 @@ void BroadcastMessage(const char *message, int senderSocket) {
     }
   }
   pthread_mutex_unlock(&mutex);
+}
+
+// Function to calculate Simple Parity bit
+int CalculateSimpleParity(const char *data) {
+  int parity = 0;
+  for (size_t i = 0; i < strlen(data); ++i) {
+    parity ^= data[i];
+  }
+  return parity;
+}
+
+// Function to calculate Checksum
+unsigned int CalculateChecksum(const char *data) {
+  unsigned int checksum = 0;
+  for (size_t i = 0; i < strlen(data); ++i) {
+    checksum += data[i];
+  }
+  return checksum;
+}
+
+// Function to calculate Cyclic Redundancy Check (CRC)
+unsigned int CalculateCRC(const char *data) {
+  // This is a simplified CRC calculation
+  unsigned int crc = 0;
+  for (size_t i = 0; i < strlen(data); ++i) {
+    crc ^= data[i] << 8;
+    for (int j = 0; j < 8; ++j) {
+      crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : crc << 1;
+    }
+  }
+  return crc;
 }
 
 void *ServiceClient(void *arg) {
@@ -66,6 +100,30 @@ void *ServiceClient(void *arg) {
     // Receive private messages from the client
     if (recv(clientSocket, &privateMessage, sizeof(PrivateMessage), 0) <= 0) {
       perror("Error receiving private message");
+      break;
+    }
+
+    // Verify Simple Parity
+    int calculatedParity = CalculateSimpleParity(privateMessage.message);
+    if (calculatedParity != privateMessage.parity) {
+      fprintf(stderr, "Error: Simple Parity check failed\n");
+      // You might want to handle this error more gracefully
+      break;
+    }
+
+    // Verify Checksum
+    unsigned int calculatedChecksum = CalculateChecksum(privateMessage.message);
+    if (calculatedChecksum != privateMessage.checksum) {
+      fprintf(stderr, "Error: Checksum check failed\n");
+      // You might want to handle this error more gracefully
+      break;
+    }
+
+    // Verify CRC
+    unsigned int calculatedCRC = CalculateCRC(privateMessage.message);
+    if (calculatedCRC != privateMessage.crc) {
+      fprintf(stderr, "Error: CRC check failed\n");
+      // You might want to handle this error more gracefully
       break;
     }
 
@@ -168,3 +226,5 @@ int main() {
   close(serverSocket);
   return 0;
 }
+
+

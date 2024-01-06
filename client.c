@@ -1,10 +1,13 @@
 // client.c
 
 #include <arpa/inet.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define SERVER_IP "127.0.0.1"
@@ -15,6 +18,9 @@ typedef struct {
   char sender[50];
   char recipient[50];
   char message[MAX_MESSAGE_SIZE];
+  int parity;            // Simple Parity
+  unsigned int checksum; // Checksum
+  unsigned int crc;      // Cyclic Redundancy Check (CRC)
 } PrivateMessage;
 
 void *HandleUserInput(void *arg) {
@@ -69,12 +75,64 @@ void *HandleUserInput(void *arg) {
             sizeof(privateMessage.recipient));
     strncpy(privateMessage.message, message, sizeof(privateMessage.message));
 
+    // Calculate Simple Parity, Checksum, and CRC
+    privateMessage.parity = 0;
+    for (size_t i = 0; i < strlen(privateMessage.message); ++i) {
+      privateMessage.parity ^= privateMessage.message[i];
+    }
+
+    privateMessage.checksum = 0;
+    for (size_t i = 0; i < strlen(privateMessage.message); ++i) {
+      privateMessage.checksum += privateMessage.message[i];
+    }
+
+    privateMessage.crc = 0;
+    for (size_t i = 0; i < strlen(privateMessage.message); ++i) {
+      privateMessage.crc ^= privateMessage.message[i] << 8;
+      for (int j = 0; j < 8; ++j) {
+        privateMessage.crc = (privateMessage.crc & 0x8000)
+                                 ? (privateMessage.crc << 1) ^ 0x1021
+                                 : privateMessage.crc << 1;
+      }
+    }
+
+    const char logDirectory[] = "log";
+    if (mkdir(logDirectory, 0755) == -1 && errno != EEXIST) {
+      perror("Error creating log directory");
+      close(clientSocket);
+      pthread_exit(NULL);
+    }
+
+    time_t rawtime;
+    struct tm *timeinfo;
+    time(&rawtime);
+    timeinfo = localtime(&rawtime);
+
+    char logFileName[50];
+    sprintf(logFileName, "%s/%s.log", logDirectory, privateMessage.recipient);
+    FILE *logFile = fopen(logFileName, "a");
+
+    if (logFile != NULL) {
+      fprintf(logFile, "[%04d-%02d-%02d %02d:%02d:%02d] %s -> %s: %s\n",
+              timeinfo->tm_year + 1900, timeinfo->tm_mon + 1, timeinfo->tm_mday,
+              timeinfo->tm_hour, timeinfo->tm_min, timeinfo->tm_sec,
+              privateMessage.sender, privateMessage.recipient,
+              privateMessage.message);
+      fclose(logFile);
+    } else {
+      perror("Error opening log file");
+      break;
+    }
+
     // Send the private message to the server
     if (send(clientSocket, &privateMessage, sizeof(PrivateMessage), 0) == -1) {
       perror("Error sending message to the server");
       break; // Break the loop on send error
     }
-    printf("\n");
+    printf("\nYour message has been sent.\n\n");
+    printf("Press Enter to continue...");
+    getchar();       // Wait for user to press Enter
+    system("clear"); // Clear the terminal screen
   }
 
   close(clientSocket);
